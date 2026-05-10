@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Mind Engine v7.0: Stable Fractal</title>
+    <style>
+        body { background: #0a0a0a; color: #d0d0d0; font-family: monospace; display: flex; flex-direction: column; align-items: center; margin: 0; height: 100vh; overflow: hidden; }
+        
+        #header { width: 100%; background: #111; padding: 20px; border-bottom: 2px solid #222; box-sizing: border-box; }
+        .hud-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .stat-box { display: flex; flex-direction: column; min-width: 100px; }
+        .stat-label { font-size: 10px; color: #555; text-transform: uppercase; }
+        .stat-val { font-size: 20px; color: #00d2ff; font-weight: bold; }
+        
+        #progress-wrap { width: 100%; height: 4px; background: #222; border-radius: 2px; overflow: hidden; }
+        #progress-bar { height: 100%; width: 0%; background: #00d2ff; transition: width 0.3s; }
+
+        #controls { padding: 15px; display: flex; gap: 10px; }
+        button { padding: 10px 15px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; text-transform: uppercase; font-size: 11px; }
+        .btn-blue { background: #00d2ff; color: #000; }
+        .btn-mode { background: #333; color: #888; }
+        .btn-mode.active { background: #ff4757; color: #fff; }
+        .btn-auto.active { background: #00ff66; color: #000; }
+
+        #path-info { width: 90%; color: #444; font-size: 11px; margin-bottom: 10px; text-align: left; }
+        
+        #grid-container { 
+            display: grid; 
+            grid-template-columns: repeat(4, 1fr); 
+            gap: 10px; 
+            width: 360px; height: 360px; 
+            background: #111; padding: 10px; border-radius: 8px;
+        }
+        
+        .tile { 
+            background: #1a1a1a; border: 1px solid #333; border-radius: 4px; 
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            position: relative; transition: 0.2s; cursor: pointer;
+        }
+        .tile.flipped { background: #0a1e2a; border-color: #1a4f6e; }
+        .tile.basis { border-color: #440; background: #1a1a00; }
+        .tile.focus { border: 2px solid #00d2ff; transform: scale(1.05); z-index: 10; box-shadow: 0 0 15px rgba(0,210,255,0.3); }
+        .inversion .tile.focus { border-color: #ff4757; box-shadow: 0 0 15px rgba(255,71,87,0.3); }
+
+        .p-bar { width: 40%; height: 2px; background: #333; margin-top: 5px; }
+        .p-fill { height: 100%; background: #00d2ff; width: 0%; }
+        .label { font-size: 12px; color: #333; font-weight: bold; }
+        .tile.flipped .label { color: #00d2ff; }
+
+        #log { width: 90%; height: 120px; background: #050505; border-top: 1px solid #222; margin-top: auto; padding: 10px; font-size: 11px; color: #555; overflow-y: auto; }
+    </style>
+</head>
+<body>
+
+<div id="header">
+    <div class="hud-row">
+        <div class="stat-box"> <span class="stat-label">Tact</span> <span class="stat-val" id="t-val">0</span> </div>
+        <div class="stat-box" style="align-items:center"> <span class="stat-label">Global Discovery</span> <span class="stat-val" id="g-val">0%</span> </div>
+        <div class="stat-box" style="align-items:flex-end"> <span class="stat-label">Uncertainty</span> <span class="stat-val" id="u-val">100%</span> </div>
+    </div>
+    <div id="progress-wrap"><div id="progress-bar"></div></div>
+</div>
+
+<div id="controls">
+    <button onclick="goUp()">▲ Level Up</button>
+    <button class="btn-blue" onclick="nextTact()">Execute Tact</button>
+    <button class="btn-mode" id="m-btn" onclick="toggleMode()">Mode: Normal</button>
+    <button id="a-btn" onclick="toggleAuto()">Auto Drive</button>
+</div>
+
+<div id="path-info">root</div>
+<div id="grid-container"></div>
+<div id="log"></div>
+
+<script>
+const MAX_DEPTH = 4;
+let allNodesCount = 0;
+let flippedNodesCount = 0;
+
+class Node {
+    constructor(id, parent = null) {
+        this.id = id;
+        this.parent = parent;
+        this.depth = parent ? parent.depth + 1 : 0;
+        this.isFlipped = false;
+        this.subNodes = (this.depth < MAX_DEPTH) ? Array(16).fill(null) : null;
+        this.saturation = 0; 
+        allNodesCount++;
+    }
+
+    getChild(i) {
+        if (this.depth >= MAX_DEPTH) return null;
+        if (!this.subNodes[i]) this.subNodes[i] = new Node(`${this.id}.${i}`, this);
+        return this.subNodes[i];
+    }
+
+    getPotential() {
+        if (this.depth >= MAX_DEPTH) return 0;
+        if (!this.isFlipped) return 1.0;
+        let unknown = 0;
+        for(let i=0; i<16; i++) {
+            const child = this.subNodes[i];
+            if (!child || child.getPotential() > 0) unknown++;
+        }
+        return unknown / 16;
+    }
+}
+
+let root = new Node("root");
+root.isFlipped = true; flippedNodesCount++;
+let currentLevel = root;
+let focusIdx = 0;
+let tact = 0;
+let mode = 'NORMAL';
+let autoInterval = null;
+let history = [];
+
+function nextTact() {
+    tact++;
+    const focusNode = currentLevel.getChild(focusIdx);
+    
+    // 1. Zoom In
+    if (mode === 'INVERSION' && focusNode.isFlipped && focusNode.getPotential() > 0) {
+        enterNode(focusIdx);
+        return;
+    }
+
+    // 2. Learn
+    if (!focusNode.isFlipped) {
+        focusNode.isFlipped = true;
+        flippedNodesCount++;
+        log(`Tact ${tact}: Node [${focusIdx}] flipped.`);
+        render();
+        return;
+    }
+
+    // 3. Move Logic
+    let candidates = [];
+    for(let i=0; i<16; i++) {
+        const n = currentLevel.getChild(i);
+        const p = n.getPotential();
+        let w = (mode === 'NORMAL') ? (1 - p) * 10 : p * 10;
+        
+        if (i === focusIdx) w -= 15;
+        if (history.includes(i)) w -= 20 / (history.indexOf(i) + 1);
+        w -= n.saturation * 5;
+        w += Math.random() * 2;
+
+        candidates.push({ i, w });
+    }
+    candidates.sort((a,b) => b.w - a.w);
+    
+    // 4. Zoom Out
+    if (mode === 'INVERSION' && candidates[0].w < 1 && currentLevel.parent) {
+        goUp();
+        return;
+    }
+
+    history.unshift(focusIdx);
+    if (history.length > 6) history.pop();
+    focusIdx = candidates[0].i;
+    currentLevel.getChild(focusIdx).saturation = 3;
+    
+    // Снижаем сатурацию других
+    for(let i=0; i<16; i++) {
+        const n = currentLevel.subNodes[i];
+        if(n && n.saturation > 0) n.saturation--;
+    }
+    
+    render();
+}
+
+function enterNode(i) {
+    currentLevel = currentLevel.getChild(i);
+    currentLevel.isFlipped = true;
+    focusIdx = 0; history = [];
+    log(`>> Zoom In: ${currentLevel.id}`);
+    render();
+}
+
+function goUp() {
+    const oldId = currentLevel.id;
+    currentLevel = currentLevel.parent;
+    focusIdx = parseInt(oldId.split('.').pop()) || 0;
+    history = [];
+    log(`<< Zoom Out: ${currentLevel.id}`);
+    render();
+}
+
+function render() {
+    const grid = document.getElementById('grid-container');
+    grid.innerHTML = '';
+    document.getElementById('t-val').innerText = tact;
+    document.getElementById('u-val').innerText = Math.round(currentLevel.getPotential()*100) + '%';
+    document.getElementById('path-info').innerText = currentLevel.id;
+    
+    const gPercent = Math.round((flippedNodesCount / allNodesCount) * 100);
+    document.getElementById('g-val').innerText = gPercent + '%';
+    document.getElementById('progress-bar').style.width = gPercent + '%';
+
+    for(let i=0; i<16; i++) {
+        const n = currentLevel.getChild(i);
+        const div = document.createElement('div');
+        div.className = `tile ${n.isFlipped ? 'flipped' : ''} ${n.depth >= MAX_DEPTH ? 'basis' : ''} ${i === focusIdx ? 'focus' : ''}`;
+        const p = n.getPotential();
+        div.innerHTML = `<div class="label">${i}</div><div class="p-bar"><div class="p-fill" style="width:${(1-p)*100}%"></div></div>`;
+        div.onclick = () => { focusIdx = i; render(); };
+        grid.appendChild(div);
+    }
+}
+
+function log(m) {
+    const l = document.getElementById('log');
+    l.innerHTML = `<div>> ${m}</div>` + l.innerHTML;
+}
+
+function toggleMode() {
+    mode = mode === 'NORMAL' ? 'INVERSION' : 'NORMAL';
+    document.getElementById('m-btn').innerText = `Mode: ${mode}`;
+    document.getElementById('m-btn').classList.toggle('active');
+    document.body.classList.toggle('inversion');
+}
+
+function toggleAuto() {
+    if (autoInterval) { clearInterval(autoInterval); autoInterval = null; }
+    else autoInterval = setInterval(nextTact, 150);
+    document.getElementById('a-btn').classList.toggle('active');
+}
+
+render();
+</script>
+</body>
+</html>
